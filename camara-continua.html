@@ -17,6 +17,16 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
 .controls{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}button{font:inherit;font-weight:750;border:0;border-radius:12px;min-height:48px;padding:11px 12px;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);color:#fff}.success{background:var(--green);color:#fff}.secondary{background:#e8edf2;color:#263445}.danger{background:#fff0ef;color:var(--red);border:1px solid #f0c4c0}
 #thumbs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:10px}.thumb{position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;border:1px solid var(--border);background:#e9edf1}.thumb img{width:100%;height:100%;object-fit:cover}.thumb span{position:absolute;bottom:2px;right:3px;background:#111c;color:white;font-size:11px;padding:2px 4px;border-radius:4px}
 .thumb .thumb-state{position:absolute;top:2px;left:2px;right:auto;bottom:auto;max-width:calc(100% - 8px);background:#101820e8;color:#fff;font-size:10px;padding:3px 4px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.thumb .thumb-retry{position:absolute;left:2px;right:2px;bottom:2px;width:calc(100% - 4px);min-height:30px;padding:3px 2px;border-radius:5px;background:#fff0ef;border:1px solid #b42318;color:#b42318;font-size:10px;display:none}.thumb.error .thumb-retry{display:block}.thumb.done .thumb-state{background:#16803ce8}
+#thumbs.document-pages{grid-template-columns:repeat(3,minmax(0,1fr))}
+.thumb.doc-page{cursor:pointer;outline-offset:2px}
+.thumb.doc-page:focus-visible{outline:3px solid var(--blue)}
+.thumb.doc-page:after{content:'VER / REPETIR';position:absolute;bottom:0;left:0;right:0;text-align:center;background:#12385ae8;color:#fff;padding:5px 1px;font-size:10px;font-weight:800}
+#cancelRepeat:not(.hidden){grid-column:1/-1}
+.preview-overlay{position:fixed;inset:0;z-index:50;background:#0b1728ef;display:flex;align-items:center;justify-content:center;padding:12px;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+.preview-card{width:min(560px,100%);max-height:95dvh;overflow:auto;background:#fff;border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.preview-card strong{font-size:16px;color:var(--navy)}
+.preview-card img{display:block;width:100%;max-height:60dvh;object-fit:contain;background:#222;border-radius:9px}
+.preview-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.preview-actions button:last-child{grid-column:1/-1}
 #warning{display:none;color:var(--red);background:#fff0ef;border:1px solid #f0c4c0;border-radius:10px;padding:10px;font-size:13px;white-space:pre-wrap;margin-top:8px}.small{font-size:12px;color:var(--muted);line-height:1.4}.hidden{display:none!important}
 @media(min-width:620px){#camFrame{aspect-ratio:16/10;min-height:350px}.controls{grid-template-columns:1fr 1fr 1fr}#thumbs{grid-template-columns:repeat(6,minmax(0,1fr))}}
 </style>
@@ -33,10 +43,22 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
     <button type="button" class="primary" id="capture" disabled>● HACER FOTO</button>
     <button type="button" class="success" id="send" disabled>TERMINAR Y VOLVER</button>
     <button type="button" class="secondary" id="cancel">CANCELAR</button>
+    <button type="button" class="secondary hidden" id="cancelRepeat">CANCELAR REPETICIÓN</button>
   </div>
   <p class="small" id="footnote">Las fotos de obra se suben automáticamente mientras sigues capturando. Al acabar, pulsa TERMINAR Y VOLVER. Las páginas de documentos se envían juntas para generar un único PDF.</p>
 </section>
 </main>
+<div class="preview-overlay hidden" id="pagePreview" role="dialog" aria-modal="true" aria-label="Revisar página del documento">
+  <div class="preview-card">
+    <strong id="previewTitle">Revisar página</strong>
+    <img id="previewImage" alt="Vista ampliada de la página capturada">
+    <div class="preview-actions">
+      <button type="button" class="primary" id="repeatPage">📷 REPETIR PÁGINA</button>
+      <button type="button" class="danger" id="deletePage">🗑️ ELIMINAR</button>
+      <button type="button" class="secondary" id="closePreview">VOLVER A CÁMARA</button>
+    </div>
+  </div>
+</div>
 <script>
 (function(){
   'use strict';
@@ -58,9 +80,19 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
   const send = document.getElementById('send');
   const cancel = document.getElementById('cancel');
   const warning = document.getElementById('warning');
+  const cancelRepeat = document.getElementById('cancelRepeat');
+  const pagePreview = document.getElementById('pagePreview');
+  const previewTitle = document.getElementById('previewTitle');
+  const previewImage = document.getElementById('previewImage');
+  const repeatPage = document.getElementById('repeatPage');
+  const deletePage = document.getElementById('deletePage');
+  const closePreviewButton = document.getElementById('closePreview');
   const footnote = document.getElementById('footnote');
   let stream = null, watchId = null, latestGps = null, busy = false, sending = false;
   let items = [];
+  let repeatIndex = null, previewIndex = null;
+  let pageThumbUrls = [];
+  if(isDocument) thumbs.classList.add('document-pages');
 
   document.getElementById('subtitle').textContent = (isPhoto ? 'Fotografías de ' : 'Páginas del documento: ') + type + ' · Obra ' + obraId;
   if (!isPhoto && !isDocument) {showError('Modo de cámara inválido. Vuelve a la aplicación y abre la cámara desde una obra.');return;}
@@ -68,7 +100,7 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
   try { const retHost = new URL(returnOrigin).hostname; if (!(retHost === 'script.google.com' || retHost.endsWith('.googleusercontent.com'))) {showError('El destino de retorno no pertenece a Google Apps Script. Vuelve a abrir la cámara desde la aplicación.');return;} } catch(e) {showError('La dirección de retorno no es válida.');return;}
   if (!window.opener) {showError('Safari ha abierto la cámara sin mantener el enlace con la aplicación. Cierra esta pestaña y vuelve a abrirla usando el botón de cámara dentro de la app.');return;}
   if (isPhoto && type === 'FACHADA') {send.textContent='TERMINAR Y VOLVER';footnote.textContent='La fachada admite una única fotografía. En cuanto la captures, comenzará a subirse automáticamente.';}
-  else if (isDocument) {send.textContent='GENERAR PDF Y SUBIR';footnote.textContent='Fotografía todas las páginas de este documento. Al terminar, se generará un único PDF y se subirá a Drive.';}
+  else if (isDocument) {send.textContent='GENERAR PDF Y SUBIR';footnote.textContent='Fotografía las páginas en orden. Toca una miniatura para ampliarla, REPETIRLA o ELIMINARLA. Solo cuando estén correctas, pulsa GENERAR PDF Y SUBIR.';}
   else {send.textContent='TERMINAR Y VOLVER';footnote.textContent='Cada foto empieza a subirse en segundo plano en cuanto tiene GPS válido. Puedes seguir haciendo fotos sin salir de esta pantalla.';}
 
   function showError(message){warning.style.display='block';warning.textContent=message;status.textContent='No se pudo iniciar la cámara.';capture.disabled=true;send.disabled=true;placeholder.textContent='Cámara no disponible';}
@@ -78,18 +110,25 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
     const doneCount = items.filter(x=>x.status==='done').length;
     const failedCount = items.filter(x=>x.status==='error').length;
     const uploadingCount = items.filter(x=>x.status==='uploading'||x.status==='captured').length;
-    count.textContent = items.length + ' ' + label + ' · ' + doneCount + ' subidas' + (uploadingCount ? ' · ' + uploadingCount + ' subiendo' : '') + (failedCount ? ' · ' + failedCount + ' con error' : '');
-    if(isDocument) send.textContent='GENERAR PDF Y SUBIR ('+items.length+')';
-    else send.textContent='TERMINAR Y VOLVER';
-    capture.disabled=!stream||busy||sending||items.length>=maxPhotos||(isPhoto&&type==='FACHADA'&&items.length>=1);
-    send.disabled=!items.length||busy||sending;
+    if(isDocument) {
+      count.textContent=items.length + ' página(s) preparadas · toca una miniatura para revisar o repetir';
+      send.textContent='GENERAR PDF Y SUBIR ('+items.length+')';
+      capture.textContent=repeatIndex===null?'● HACER FOTO':'● REPETIR PÁGINA '+(repeatIndex+1);
+      cancelRepeat.classList.toggle('hidden',repeatIndex===null);
+    } else {
+      count.textContent = items.length + ' ' + label + ' · ' + doneCount + ' subidas' + (uploadingCount ? ' · ' + uploadingCount + ' subiendo' : '') + (failedCount ? ' · ' + failedCount + ' con error' : '');
+      send.textContent='TERMINAR Y VOLVER';
+    }
+    capture.disabled=!stream||busy||sending||(items.length>=maxPhotos && !(isDocument && repeatIndex!==null))||(isPhoto&&type==='FACHADA'&&items.length>=1);
+    send.disabled=!items.length||busy||sending||(isDocument && repeatIndex!==null);
     cancel.disabled=sending;
+    cancelRepeat.disabled=sending||busy;
     if(isPhoto){
       if(failedCount) status.textContent=failedCount+' foto(s) no se han subido. Pulsa REINTENTAR en cada miniatura antes de terminar.';
       else if(uploadingCount) status.textContent=uploadingCount+' foto(s) subiendo automáticamente. Puedes continuar capturando.';
       else if(doneCount) status.textContent='Todas las fotos capturadas hasta ahora están subidas. Puedes seguir haciendo fotos.';
     }
-    if(items.length>=maxPhotos) status.textContent='Has alcanzado el límite de captura de esta sesión.';
+    if(items.length>=maxPhotos && repeatIndex===null) status.textContent=isDocument?'Has alcanzado el número máximo de páginas; puedes repetir una de las capturadas.':'Has alcanzado el límite de captura de esta sesión.';
   }
   function stopCamera(){if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId);}catch(e){}}watchId=null;if(stream){stream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});}stream=null;video.srcObject=null;}
   function getPosition(){
@@ -116,7 +155,7 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
     if(navigator.geolocation&&navigator.geolocation.watchPosition){watchId=navigator.geolocation.watchPosition(pos=>{const c=pos&&pos.coords;if(c&&Number.isFinite(c.latitude)&&Number.isFinite(c.longitude)&&Number.isFinite(c.accuracy))latestGps={latitud:c.latitude,longitud:c.longitude,precision:c.accuracy,timestamp:Date.now()};},()=>{}, {enableHighAccuracy:true,maximumAge:3000,timeout:15000});}
   }
   function captureOne(){
-    if(!stream||busy||sending||items.length>=maxPhotos)return;
+    if(!stream||busy||sending||(items.length>=maxPhotos && !(isDocument && repeatIndex!==null)))return;
     if(!video.videoWidth||!video.videoHeight){status.textContent='La cámara se está preparando. Espera un instante.';return;}
     if(isPhoto&&type==='FACHADA'&&items.length>=1){status.textContent='La fachada admite una sola foto.';return;}
     busy=true;clearError();update();status.textContent='Capturando imagen…';
@@ -127,14 +166,22 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
     const finish=blob=>{
       canvas.width=canvas.height=1;
       if(!blob){busy=false;update();showError('No se pudo preparar la imagen.');return;}
-      const item={blob:blob,capturedAt:capturedAt,gps:null,status:doc?'captured':'captured',photoId:requestId+'-'+Date.now()+'-'+(items.length+1)};
-      items.push(item);
-      item.thumb=addThumb(blob,items.length,item);
       if(doc){
-        item.gps=null;
-        status.textContent='Página añadida. Continúa con la siguiente.';
+        if(repeatIndex!==null){
+          const index=repeatIndex;
+          items[index]={blob:blob,capturedAt:capturedAt,gps:null,status:'captured',photoId:requestId+'-doc-'+Date.now()+'-'+(index+1)};
+          repeatIndex=null;
+          status.textContent='Página '+(index+1)+' repetida correctamente. Comprueba la miniatura antes de enviar.';
+        } else {
+          items.push({blob:blob,capturedAt:capturedAt,gps:null,status:'captured',photoId:requestId+'-doc-'+Date.now()+'-'+items.length});
+          status.textContent='Página '+items.length+' añadida. Puedes continuar o tocar su miniatura para revisarla.';
+        }
+        renderDocumentThumbs();
         busy=false;update();
       }else{
+        const item={blob:blob,capturedAt:capturedAt,gps:null,status:'captured',photoId:requestId+'-'+Date.now()+'-'+(items.length+1)};
+        items.push(item);
+        item.thumb=addThumb(blob,items.length,item);
         status.textContent='Foto capturada; comprobando GPS para iniciar la subida…';
         currentGps().then(g=>{
           item.gps=g;
@@ -154,6 +201,59 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
     };
     if(canvas.toBlob)canvas.toBlob(finish,'image/jpeg',doc?0.84:0.85);
     else{try{const data=canvas.toDataURL('image/jpeg',doc?0.84:0.85),parts=data.split(','),bin=atob(parts[1]),arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);finish(new Blob([arr],{type:'image/jpeg'}));}catch(e){finish(null);}}
+  }
+  // Solo para DOCUMENTOS: revisar en grande y volver a hacer una página concreta
+  // sin alterar el orden, la cantidad de páginas ni las subidas de fotos de obra.
+  function renderDocumentThumbs(){
+    if(!isDocument)return;
+    pageThumbUrls.forEach(url=>{try{URL.revokeObjectURL(url);}catch(e){}});
+    pageThumbUrls=[];
+    thumbs.replaceChildren();
+    items.forEach((item,index)=>{
+      const box=document.createElement('div');box.className='thumb doc-page';
+      box.setAttribute('role','button');box.tabIndex=0;
+      box.setAttribute('aria-label','Revisar o repetir página '+(index+1));
+      const img=document.createElement('img');
+      const url=URL.createObjectURL(item.blob);pageThumbUrls.push(url);
+      img.src=url;img.alt='Página '+(index+1);
+      const number=document.createElement('span');number.textContent=String(index+1);
+      number.style.bottom='auto';number.style.top='2px';number.style.right='3px';
+      box.append(img,number);
+      box.addEventListener('click',()=>openPagePreview(index));
+      box.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openPagePreview(index);}});
+      thumbs.appendChild(box);
+    });
+  }
+  function openPagePreview(index){
+    if(!isDocument||sending||busy||index<0||index>=items.length)return;
+    previewIndex=index;
+    previewTitle.textContent='Página '+(index+1)+' de '+items.length;
+    previewImage.src=pageThumbUrls[index];
+    pagePreview.classList.remove('hidden');
+    closePreviewButton.focus();
+  }
+  function closePagePreview(){
+    pagePreview.classList.add('hidden');
+    previewImage.removeAttribute('src');
+    previewIndex=null;
+    if(isDocument)capture.focus();
+  }
+  function repeatDocumentPage(){
+    if(!isDocument||sending||busy||previewIndex===null)return;
+    repeatIndex=previewIndex;
+    closePagePreview();
+    clearError();update();
+    status.textContent='Repetición preparada: apunta a la página '+(repeatIndex+1)+' y pulsa REPETIR PÁGINA. La nueva captura sustituirá la anterior, sin cambiar el orden.';
+  }
+  function deleteDocumentPage(){
+    if(!isDocument||sending||busy||previewIndex===null)return;
+    const idx=previewIndex;
+    items.splice(idx,1);
+    if(repeatIndex===idx)repeatIndex=null;
+    else if(repeatIndex!==null&&repeatIndex>idx)repeatIndex--;
+    closePagePreview();
+    renderDocumentThumbs();update();
+    status.textContent='Página '+(idx+1)+' eliminada. Las demás conservan su orden. Puedes volver a fotografiarla.';
   }
   function addThumb(blob,number,item){
     const box=document.createElement('div');box.className='thumb';
@@ -206,7 +306,8 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
     catch(e){sending=false;cancel.disabled=false;update();showError('No se pudo conectar con la aplicación.');}
   }
   function sendDocumentBatch(){
-    if(sending||!items.length)return;clearError();sending=true;capture.disabled=true;send.disabled=true;cancel.disabled=true;status.textContent='Preparando y transfiriendo las páginas…';
+    if(sending||!items.length)return;
+    if(repeatIndex!==null){status.textContent='Termina o cancela la repetición de la página '+(repeatIndex+1)+' antes de enviar.';return;}clearError();sending=true;capture.disabled=true;send.disabled=true;cancel.disabled=true;status.textContent='Preparando y transfiriendo las páginas…';
     if(!window.opener){sending=false;cancel.disabled=false;update();showError('Se ha perdido la conexión con la app. Vuelve a abrir esta cámara desde la obra.');return;}
     const payload={app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_BATCH',requestId:requestId,mode:mode,type:type,obraId:obraId,items:items.map(x=>({blob:x.blob,capturedAt:x.capturedAt,gps:null}))};
     window.opener.postMessage(payload,returnOrigin);
@@ -237,10 +338,18 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
       closeWhenAcked(msg.message||'Captura cerrada.');return;
     }
   });
+  if(isDocument){
+    repeatPage.addEventListener('click',repeatDocumentPage);
+    deletePage.addEventListener('click',deleteDocumentPage);
+    closePreviewButton.addEventListener('click',closePagePreview);
+    pagePreview.addEventListener('click',event=>{if(event.target===pagePreview)closePagePreview();});
+    document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!pagePreview.classList.contains('hidden'))closePagePreview();});
+    cancelRepeat.addEventListener('click',()=>{repeatIndex=null;update();status.textContent='Repetición cancelada. Se conserva la página original.';});
+  }
   capture.addEventListener('click',captureOne);
   send.addEventListener('click',()=>{if(isDocument)sendDocumentBatch();else finishPhotoSession();});
   cancel.addEventListener('click',cancelCapture);
-  window.addEventListener('pagehide',stopCamera,{once:true});
+  window.addEventListener('pagehide',()=>{stopCamera();pageThumbUrls.forEach(url=>{try{URL.revokeObjectURL(url);}catch(e){}});},{once:true});
   start();update();
 })();
 </script>
