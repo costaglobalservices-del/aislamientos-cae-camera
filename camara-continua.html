@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12385a">
+<title>Cámara · APP AISLAMIENTOS CAE</title>
+<style>
+:root{color-scheme:light;--navy:#12385a;--blue:#1677b7;--green:#16803c;--red:#b42318;--border:#d9e0e7;--muted:#667085}
+*{box-sizing:border-box} body{margin:0;background:#f3f6f9;color:#14212e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+main{width:min(760px,100%);margin:0 auto;padding:env(safe-area-inset-top) 12px calc(18px + env(safe-area-inset-bottom))}
+header{padding:14px 4px 10px}h1{font-size:20px;line-height:1.2;margin:0;color:var(--navy)}#subtitle{color:var(--muted);font-size:13px;margin-top:5px}
+.card{background:#fff;border:1px solid var(--border);border-radius:16px;padding:12px;margin:10px 0;box-shadow:0 2px 8px rgba(18,56,90,.04)}
+#camFrame{position:relative;background:#101820;border-radius:12px;overflow:hidden;min-height:250px;aspect-ratio:3/4;display:grid;place-items:center}
+video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;inset:0}#cameraPlaceholder{color:#fff;text-align:center;padding:20px;z-index:1}
+.status{font-size:13px;color:#344054;padding:8px 2px;min-height:34px}#count{font-size:14px;font-weight:800;color:var(--navy)}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}button{font:inherit;font-weight:750;border:0;border-radius:12px;min-height:48px;padding:11px 12px;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);color:#fff}.success{background:var(--green);color:#fff}.secondary{background:#e8edf2;color:#263445}.danger{background:#fff0ef;color:var(--red);border:1px solid #f0c4c0}
+#thumbs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:10px}.thumb{position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;border:1px solid var(--border);background:#e9edf1}.thumb img{width:100%;height:100%;object-fit:cover}.thumb span{position:absolute;bottom:2px;right:3px;background:#111c;color:white;font-size:11px;padding:2px 4px;border-radius:4px}
+#warning{display:none;color:var(--red);background:#fff0ef;border:1px solid #f0c4c0;border-radius:10px;padding:10px;font-size:13px;white-space:pre-wrap;margin-top:8px}.small{font-size:12px;color:var(--muted);line-height:1.4}.hidden{display:none!important}
+@media(min-width:620px){#camFrame{aspect-ratio:16/10;min-height:350px}.controls{grid-template-columns:1fr 1fr 1fr}#thumbs{grid-template-columns:repeat(6,minmax(0,1fr))}}
+</style>
+</head>
+<body><main>
+<header><h1>APP AISLAMIENTOS CAE · Cámara</h1><div id="subtitle">Cargando cámara…</div></header>
+<section class="card">
+  <div id="camFrame"><video id="video" autoplay playsinline muted></video><div id="cameraPlaceholder">Solicitando permiso de cámara…</div></div>
+  <div class="status" id="status" role="status" aria-live="polite">Solicitando acceso a la cámara y al GPS.</div>
+  <div id="count">0 fotos preparadas</div>
+  <div id="thumbs" aria-label="Miniaturas capturadas"></div>
+  <div id="warning" role="alert"></div>
+  <div class="controls">
+    <button type="button" class="primary" id="capture" disabled>● HACER FOTO</button>
+    <button type="button" class="success" id="send" disabled>SUBIR TODAS</button>
+    <button type="button" class="secondary" id="cancel">CANCELAR</button>
+  </div>
+  <p class="small" id="footnote">Haz todas las capturas seguidas sin cerrar esta pantalla. Las fotos se enviarán a la obra que abrió esta ventana cuando pulses SUBIR TODAS.</p>
+</section>
+</main>
+<script>
+(function(){
+  'use strict';
+  const p = new URLSearchParams(location.search);
+  const mode = (p.get('mode') || '').toUpperCase();
+  const type = (p.get('type') || '').toUpperCase();
+  const obraId = p.get('obraId') || '';
+  const requestId = p.get('requestId') || '';
+  const returnOrigin = p.get('returnOrigin') || '';
+  const maxPhotos = Math.max(1, Math.min(50, Number(p.get('maxPhotos') || 50)));
+  const isPhoto = mode === 'FOTO';
+  const isDocument = mode === 'DOCUMENTO';
+  const video = document.getElementById('video');
+  const placeholder = document.getElementById('cameraPlaceholder');
+  const status = document.getElementById('status');
+  const count = document.getElementById('count');
+  const thumbs = document.getElementById('thumbs');
+  const capture = document.getElementById('capture');
+  const send = document.getElementById('send');
+  const cancel = document.getElementById('cancel');
+  const warning = document.getElementById('warning');
+  const footnote = document.getElementById('footnote');
+  let stream = null, watchId = null, latestGps = null, busy = false, sending = false;
+  let items = [];
+
+  document.getElementById('subtitle').textContent = (isPhoto ? 'Fotografías de ' : 'Páginas del documento: ') + type + ' · Obra ' + obraId;
+  if (!isPhoto && !isDocument) {showError('Modo de cámara inválido. Vuelve a la aplicación y abre la cámara desde una obra.');return;}
+  if (!obraId || !requestId || !returnOrigin || !/^https:\/\//i.test(returnOrigin)) {showError('Faltan datos de retorno seguros. Cierra esta ventana y vuelve a abrir la cámara desde la aplicación.');return;}
+  try { const retHost = new URL(returnOrigin).hostname; if (!(retHost === 'script.google.com' || retHost.endsWith('.googleusercontent.com'))) {showError('El destino de retorno no pertenece a Google Apps Script. Vuelve a abrir la cámara desde la aplicación.');return;} } catch(e) {showError('La dirección de retorno no es válida.');return;}
+  if (!window.opener) {showError('Safari ha abierto la cámara sin mantener el enlace con la aplicación. Cierra esta pestaña y vuelve a abrirla usando el botón de cámara dentro de la app.');return;}
+  if (isPhoto && type === 'FACHADA') {send.textContent='SUBIR FACHADA';footnote.textContent='La fachada admite una única fotografía. Captura una imagen y envíala a la obra.';}
+  else if (isDocument) {send.textContent='GENERAR PDF Y SUBIR';footnote.textContent='Fotografía todas las páginas de este documento. Se enviarán a la app para generar un único PDF y subirlo a Drive.';}
+  else {send.textContent='SUBIR TODAS ('+items.length+')';}
+
+  function showError(message){warning.style.display='block';warning.textContent=message;status.textContent='No se pudo iniciar la cámara.';capture.disabled=true;send.disabled=true;placeholder.textContent='Cámara no disponible';}
+  function clearError(){warning.style.display='none';warning.textContent='';}
+  function update(){
+    const label = isDocument ? 'página(s) preparadas' : 'foto(s) preparadas';
+    count.textContent=items.length+' '+label;
+    if(isDocument) send.textContent='GENERAR PDF Y SUBIR ('+items.length+')';
+    else if(type==='FACHADA') send.textContent='SUBIR FACHADA ('+items.length+')';
+    else send.textContent='SUBIR TODAS ('+items.length+')';
+    capture.disabled=!stream||busy||sending||items.length>=maxPhotos;
+    send.disabled=!items.length||busy||sending;
+    cancel.disabled=sending;
+    if(items.length>=maxPhotos) status.textContent='Has alcanzado el límite de captura de esta sesión.';
+  }
+  function stopCamera(){if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId);}catch(e){}}watchId=null;if(stream){stream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});}stream=null;video.srcObject=null;}
+  function getPosition(){
+    return new Promise((resolve,reject)=>{
+      if(!navigator.geolocation){reject(new Error('Este navegador no permite obtener GPS.'));return;}
+      navigator.geolocation.getCurrentPosition(pos=>{
+        const c=pos&&pos.coords;
+        if(!c||!Number.isFinite(c.latitude)||!Number.isFinite(c.longitude)||!Number.isFinite(c.accuracy)){reject(new Error('El GPS no devolvió una ubicación válida.'));return;}
+        if(c.accuracy>100){reject(new Error('La precisión GPS es de '+Math.round(c.accuracy)+' m; se requiere 100 m o mejor.'));return;}
+        resolve({latitud:c.latitude,longitud:c.longitude,precision:c.accuracy,fecha:new Date().toISOString()});
+      },err=>reject(new Error(err&&err.message?err.message:'No se pudo obtener GPS.')),{enableHighAccuracy:true,maximumAge:0,timeout:15000});
+    });
+  }
+  function currentGps(){if(latestGps&&latestGps.precision<=100&&(Date.now()-latestGps.timestamp)<=15000)return Promise.resolve({latitud:latestGps.latitud,longitud:latestGps.longitud,precision:latestGps.precision,fecha:new Date().toISOString()});return getPosition();}
+  function start(){
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){showError('Este navegador no permite acceso a cámara web. Abre este módulo directamente en Safari actualizado mediante HTTPS.');return;}
+    status.textContent='Solicitando permiso de cámara…';
+    navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}}).then(s=>{
+      stream=s;video.srcObject=s;video.muted=true;video.playsInline=true;
+      return video.play().catch(()=>{});
+    }).then(()=>{
+      placeholder.classList.add('hidden');capture.disabled=false;status.textContent='Cámara lista. Puedes hacer varias capturas seguidas.';update();
+    }).catch(err=>showError('Safari no permitió abrir la cámara: '+(err&&err.message?err.message:'permiso denegado')+'. Comprueba Ajustes > Safari > Cámara y vuelve a entrar desde la aplicación.'));
+    if(navigator.geolocation&&navigator.geolocation.watchPosition){watchId=navigator.geolocation.watchPosition(pos=>{const c=pos&&pos.coords;if(c&&Number.isFinite(c.latitude)&&Number.isFinite(c.longitude)&&Number.isFinite(c.accuracy))latestGps={latitud:c.latitude,longitud:c.longitude,precision:c.accuracy,timestamp:Date.now()};},()=>{}, {enableHighAccuracy:true,maximumAge:3000,timeout:15000});}
+  }
+  function captureOne(){
+    if(!stream||busy||sending||items.length>=maxPhotos)return;
+    if(!video.videoWidth||!video.videoHeight){status.textContent='La cámara se está preparando. Espera un instante.';return;}
+    busy=true;clearError();update();status.textContent='Capturando imagen…';
+    const doc = isDocument, maxDim=doc?1800:2000, scale=Math.min(1,maxDim/Math.max(video.videoWidth,video.videoHeight));
+    const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(video.videoWidth*scale));canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
+    try{canvas.getContext('2d',{alpha:false}).drawImage(video,0,0,canvas.width,canvas.height);}catch(e){busy=false;update();showError('No se pudo capturar la imagen. Inténtalo otra vez.');return;}
+    const capturedAt=new Date().toISOString();
+    const finish=blob=>{
+      canvas.width=canvas.height=1;
+      if(!blob){busy=false;update();showError('No se pudo preparar la imagen.');return;}
+      const item={blob:blob,capturedAt:capturedAt,gps:null};
+      items.push(item);
+      addThumb(blob,items.length);
+      if (isDocument) {
+        item.gps = null;
+        status.textContent='Página añadida. Continúa con la siguiente.';
+        busy=false;update();
+      } else {
+        status.textContent='Imagen capturada; comprobando GPS.';
+        currentGps().then(g=>{item.gps=g;status.textContent='Foto capturada con GPS válido. Continúa con la siguiente.';}).catch(e=>{item.gps=null;status.textContent='Foto guardada en la cola, pero falta GPS. La app no la subirá hasta obtener precisión válida.';warning.style.display='block';warning.textContent=e.message;}).finally(()=>{busy=false;update();});
+      }
+    };
+    if(canvas.toBlob)canvas.toBlob(finish,'image/jpeg',doc?0.84:0.85);
+    else {try{const data=canvas.toDataURL('image/jpeg',doc?0.84:0.85);const parts=data.split(',');const bin=atob(parts[1]);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);finish(new Blob([arr],{type:'image/jpeg'}));}catch(e){finish(null);}}
+  }
+  function addThumb(blob,number){const box=document.createElement('div');box.className='thumb';const img=document.createElement('img');img.alt='Captura '+number;img.src=URL.createObjectURL(blob);const sp=document.createElement('span');sp.textContent=number;box.append(img,sp);thumbs.appendChild(box);}
+  function cancelCapture(){stopCamera();try{window.close();}catch(e){}status.textContent='Puedes cerrar esta pestaña y volver a la aplicación. No se ha enviado ninguna imagen.';placeholder.classList.remove('hidden');placeholder.textContent='Captura cancelada';capture.disabled=true;send.disabled=true;}
+  function sendBatch(){
+    if(sending||!items.length)return;clearError();sending=true;capture.disabled=true;send.disabled=true;cancel.disabled=true;status.textContent='Comprobando GPS y preparando las imágenes…';
+    const missing=isPhoto?items.map((item,index)=>({item,index})).filter(x=>!x.item.gps||!Number.isFinite(x.item.gps.precision)||x.item.gps.precision>100):[];
+    let chain=Promise.resolve();
+    missing.forEach(entry=>{chain=chain.then(()=>getPosition().then(g=>{entry.item.gps=g;}));});
+    chain.then(()=>{
+      if(isPhoto && items.some(x=>!x.gps||x.gps.precision>100))throw new Error('Al menos una captura no tiene GPS válido.');
+      if(!window.opener)throw new Error('Se ha perdido la conexión con la app. Vuelve a abrir esta cámara desde la obra.');
+      const payload={app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_BATCH',requestId:requestId,mode:mode,type:type,obraId:obraId,items:items.map(x=>({blob:x.blob,capturedAt:x.capturedAt,gps:x.gps}))};
+      window.opener.postMessage(payload,returnOrigin);
+      status.textContent='Imágenes enviadas a la aplicación. Esperando confirmación…';
+      const timer=setTimeout(()=>{sending=false;cancel.disabled=false;update();showError('No llegó confirmación de la aplicación. Comprueba que la pestaña de la app sigue abierta y vuelve a intentarlo.');},12000);
+      function ackHandler(event){
+        if(event.origin!==returnOrigin||!event.data||event.data.app!=='AISLAMIENTOS_CAE_CAMERA'||event.data.kind!=='CAMERA_BATCH_ACK'||event.data.requestId!==requestId)return;
+        clearTimeout(timer);window.removeEventListener('message',ackHandler);
+        if(!event.data.ok){sending=false;cancel.disabled=false;update();showError(event.data.message||'La aplicación rechazó la transferencia.');return;}
+        status.textContent=event.data.message||'Transferencia recibida. La subida continuará en la aplicación.';
+        stopCamera();capture.disabled=true;send.disabled=true;
+        setTimeout(()=>{try{window.close();}catch(e){}placeholder.classList.remove('hidden');placeholder.textContent='Transferencia recibida. Vuelve a la pestaña de APP AISLAMIENTOS CAE.';},700);
+      }
+      window.addEventListener('message',ackHandler);
+    }).catch(err=>{sending=false;cancel.disabled=false;update();showError(err&&err.message?err.message:String(err));status.textContent='No se enviaron las imágenes. Las capturas siguen guardadas aquí para reintentar.';});
+  }
+  capture.addEventListener('click',captureOne);send.addEventListener('click',sendBatch);cancel.addEventListener('click',cancelCapture);
+  window.addEventListener('pagehide',stopCamera,{once:true});
+  start();update();
+})();
+</script>
+</body></html>
