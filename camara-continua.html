@@ -16,6 +16,7 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
 .status{font-size:13px;color:#344054;padding:8px 2px;min-height:34px}#count{font-size:14px;font-weight:800;color:var(--navy)}
 .controls{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}button{font:inherit;font-weight:750;border:0;border-radius:12px;min-height:48px;padding:11px 12px;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);color:#fff}.success{background:var(--green);color:#fff}.secondary{background:#e8edf2;color:#263445}.danger{background:#fff0ef;color:var(--red);border:1px solid #f0c4c0}
 #thumbs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:10px}.thumb{position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;border:1px solid var(--border);background:#e9edf1}.thumb img{width:100%;height:100%;object-fit:cover}.thumb span{position:absolute;bottom:2px;right:3px;background:#111c;color:white;font-size:11px;padding:2px 4px;border-radius:4px}
+.thumb .thumb-state{position:absolute;top:2px;left:2px;right:auto;bottom:auto;max-width:calc(100% - 8px);background:#101820e8;color:#fff;font-size:10px;padding:3px 4px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.thumb .thumb-retry{position:absolute;left:2px;right:2px;bottom:2px;width:calc(100% - 4px);min-height:30px;padding:3px 2px;border-radius:5px;background:#fff0ef;border:1px solid #b42318;color:#b42318;font-size:10px;display:none}.thumb.error .thumb-retry{display:block}.thumb.done .thumb-state{background:#16803ce8}
 #warning{display:none;color:var(--red);background:#fff0ef;border:1px solid #f0c4c0;border-radius:10px;padding:10px;font-size:13px;white-space:pre-wrap;margin-top:8px}.small{font-size:12px;color:var(--muted);line-height:1.4}.hidden{display:none!important}
 @media(min-width:620px){#camFrame{aspect-ratio:16/10;min-height:350px}.controls{grid-template-columns:1fr 1fr 1fr}#thumbs{grid-template-columns:repeat(6,minmax(0,1fr))}}
 </style>
@@ -30,10 +31,10 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
   <div id="warning" role="alert"></div>
   <div class="controls">
     <button type="button" class="primary" id="capture" disabled>● HACER FOTO</button>
-    <button type="button" class="success" id="send" disabled>SUBIR TODAS</button>
+    <button type="button" class="success" id="send" disabled>TERMINAR Y VOLVER</button>
     <button type="button" class="secondary" id="cancel">CANCELAR</button>
   </div>
-  <p class="small" id="footnote">Haz todas las capturas seguidas sin cerrar esta pantalla. Las fotos se enviarán a la obra que abrió esta ventana cuando pulses SUBIR TODAS.</p>
+  <p class="small" id="footnote">Las fotos de obra se suben automáticamente mientras sigues capturando. Al acabar, pulsa TERMINAR Y VOLVER. Las páginas de documentos se envían juntas para generar un único PDF.</p>
 </section>
 </main>
 <script>
@@ -66,21 +67,28 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
   if (!obraId || !requestId || !returnOrigin || !/^https:\/\//i.test(returnOrigin)) {showError('Faltan datos de retorno seguros. Cierra esta ventana y vuelve a abrir la cámara desde la aplicación.');return;}
   try { const retHost = new URL(returnOrigin).hostname; if (!(retHost === 'script.google.com' || retHost.endsWith('.googleusercontent.com'))) {showError('El destino de retorno no pertenece a Google Apps Script. Vuelve a abrir la cámara desde la aplicación.');return;} } catch(e) {showError('La dirección de retorno no es válida.');return;}
   if (!window.opener) {showError('Safari ha abierto la cámara sin mantener el enlace con la aplicación. Cierra esta pestaña y vuelve a abrirla usando el botón de cámara dentro de la app.');return;}
-  if (isPhoto && type === 'FACHADA') {send.textContent='SUBIR FACHADA';footnote.textContent='La fachada admite una única fotografía. Captura una imagen y envíala a la obra.';}
-  else if (isDocument) {send.textContent='GENERAR PDF Y SUBIR';footnote.textContent='Fotografía todas las páginas de este documento. Se enviarán a la app para generar un único PDF y subirlo a Drive.';}
-  else {send.textContent='SUBIR TODAS ('+items.length+')';}
+  if (isPhoto && type === 'FACHADA') {send.textContent='TERMINAR Y VOLVER';footnote.textContent='La fachada admite una única fotografía. En cuanto la captures, comenzará a subirse automáticamente.';}
+  else if (isDocument) {send.textContent='GENERAR PDF Y SUBIR';footnote.textContent='Fotografía todas las páginas de este documento. Al terminar, se generará un único PDF y se subirá a Drive.';}
+  else {send.textContent='TERMINAR Y VOLVER';footnote.textContent='Cada foto empieza a subirse en segundo plano en cuanto tiene GPS válido. Puedes seguir haciendo fotos sin salir de esta pantalla.';}
 
   function showError(message){warning.style.display='block';warning.textContent=message;status.textContent='No se pudo iniciar la cámara.';capture.disabled=true;send.disabled=true;placeholder.textContent='Cámara no disponible';}
   function clearError(){warning.style.display='none';warning.textContent='';}
   function update(){
-    const label = isDocument ? 'página(s) preparadas' : 'foto(s) preparadas';
-    count.textContent=items.length+' '+label;
+    const label = isDocument ? 'página(s)' : 'foto(s)';
+    const doneCount = items.filter(x=>x.status==='done').length;
+    const failedCount = items.filter(x=>x.status==='error').length;
+    const uploadingCount = items.filter(x=>x.status==='uploading'||x.status==='captured').length;
+    count.textContent = items.length + ' ' + label + ' · ' + doneCount + ' subidas' + (uploadingCount ? ' · ' + uploadingCount + ' subiendo' : '') + (failedCount ? ' · ' + failedCount + ' con error' : '');
     if(isDocument) send.textContent='GENERAR PDF Y SUBIR ('+items.length+')';
-    else if(type==='FACHADA') send.textContent='SUBIR FACHADA ('+items.length+')';
-    else send.textContent='SUBIR TODAS ('+items.length+')';
-    capture.disabled=!stream||busy||sending||items.length>=maxPhotos;
+    else send.textContent='TERMINAR Y VOLVER';
+    capture.disabled=!stream||busy||sending||items.length>=maxPhotos||(isPhoto&&type==='FACHADA'&&items.length>=1);
     send.disabled=!items.length||busy||sending;
     cancel.disabled=sending;
+    if(isPhoto){
+      if(failedCount) status.textContent=failedCount+' foto(s) no se han subido. Pulsa REINTENTAR en cada miniatura antes de terminar.';
+      else if(uploadingCount) status.textContent=uploadingCount+' foto(s) subiendo automáticamente. Puedes continuar capturando.';
+      else if(doneCount) status.textContent='Todas las fotos capturadas hasta ahora están subidas. Puedes seguir haciendo fotos.';
+    }
     if(items.length>=maxPhotos) status.textContent='Has alcanzado el límite de captura de esta sesión.';
   }
   function stopCamera(){if(watchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(watchId);}catch(e){}}watchId=null;if(stream){stream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});}stream=null;video.srcObject=null;}
@@ -110,55 +118,128 @@ video{display:block;width:100%;height:100%;object-fit:cover;position:absolute;in
   function captureOne(){
     if(!stream||busy||sending||items.length>=maxPhotos)return;
     if(!video.videoWidth||!video.videoHeight){status.textContent='La cámara se está preparando. Espera un instante.';return;}
+    if(isPhoto&&type==='FACHADA'&&items.length>=1){status.textContent='La fachada admite una sola foto.';return;}
     busy=true;clearError();update();status.textContent='Capturando imagen…';
-    const doc = isDocument, maxDim=doc?1800:2000, scale=Math.min(1,maxDim/Math.max(video.videoWidth,video.videoHeight));
+    const doc=isDocument,maxDim=doc?1800:2000,scale=Math.min(1,maxDim/Math.max(video.videoWidth,video.videoHeight));
     const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(video.videoWidth*scale));canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
     try{canvas.getContext('2d',{alpha:false}).drawImage(video,0,0,canvas.width,canvas.height);}catch(e){busy=false;update();showError('No se pudo capturar la imagen. Inténtalo otra vez.');return;}
     const capturedAt=new Date().toISOString();
     const finish=blob=>{
       canvas.width=canvas.height=1;
       if(!blob){busy=false;update();showError('No se pudo preparar la imagen.');return;}
-      const item={blob:blob,capturedAt:capturedAt,gps:null};
+      const item={blob:blob,capturedAt:capturedAt,gps:null,status:doc?'captured':'captured',photoId:requestId+'-'+Date.now()+'-'+(items.length+1)};
       items.push(item);
-      addThumb(blob,items.length);
-      if (isDocument) {
-        item.gps = null;
+      item.thumb=addThumb(blob,items.length,item);
+      if(doc){
+        item.gps=null;
         status.textContent='Página añadida. Continúa con la siguiente.';
         busy=false;update();
-      } else {
-        status.textContent='Imagen capturada; comprobando GPS.';
-        currentGps().then(g=>{item.gps=g;status.textContent='Foto capturada con GPS válido. Continúa con la siguiente.';}).catch(e=>{item.gps=null;status.textContent='Foto guardada en la cola, pero falta GPS. La app no la subirá hasta obtener precisión válida.';warning.style.display='block';warning.textContent=e.message;}).finally(()=>{busy=false;update();});
+      }else{
+        status.textContent='Foto capturada; comprobando GPS para iniciar la subida…';
+        currentGps().then(g=>{
+          item.gps=g;
+          item.status='uploading';
+          item.thumb.setStatus('SUBIENDO','uploading');
+          if(!window.opener)throw new Error('Se ha perdido la conexión con la app. Abre la cámara desde una obra.');
+          window.opener.postMessage({app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_PHOTO',requestId:requestId,mode:mode,type:type,obraId:obraId,photoId:item.photoId,item:{blob:item.blob,capturedAt:item.capturedAt,gps:item.gps}},returnOrigin);
+          status.textContent='Foto enviada para subir automáticamente. Puedes hacer la siguiente.';
+        }).catch(e=>{
+          item.status='error';
+          item.thumb.setStatus('ERROR GPS','error');
+          item.thumb.showRetry(false);
+          warning.style.display='block';warning.textContent=e&&e.message?e.message:String(e);
+          status.textContent='No se ha podido iniciar la subida de esta foto. Pulsa REINTENTAR cuando el GPS tenga precisión válida.';
+        }).finally(()=>{busy=false;update();});
       }
     };
     if(canvas.toBlob)canvas.toBlob(finish,'image/jpeg',doc?0.84:0.85);
-    else {try{const data=canvas.toDataURL('image/jpeg',doc?0.84:0.85);const parts=data.split(',');const bin=atob(parts[1]);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);finish(new Blob([arr],{type:'image/jpeg'}));}catch(e){finish(null);}}
+    else{try{const data=canvas.toDataURL('image/jpeg',doc?0.84:0.85),parts=data.split(','),bin=atob(parts[1]),arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);finish(new Blob([arr],{type:'image/jpeg'}));}catch(e){finish(null);}}
   }
-  function addThumb(blob,number){const box=document.createElement('div');box.className='thumb';const img=document.createElement('img');img.alt='Captura '+number;img.src=URL.createObjectURL(blob);const sp=document.createElement('span');sp.textContent=number;box.append(img,sp);thumbs.appendChild(box);}
-  function cancelCapture(){stopCamera();try{window.close();}catch(e){}status.textContent='Puedes cerrar esta pestaña y volver a la aplicación. No se ha enviado ninguna imagen.';placeholder.classList.remove('hidden');placeholder.textContent='Captura cancelada';capture.disabled=true;send.disabled=true;}
-  function sendBatch(){
-    if(sending||!items.length)return;clearError();sending=true;capture.disabled=true;send.disabled=true;cancel.disabled=true;status.textContent='Comprobando GPS y preparando las imágenes…';
-    const missing=isPhoto?items.map((item,index)=>({item,index})).filter(x=>!x.item.gps||!Number.isFinite(x.item.gps.precision)||x.item.gps.precision>100):[];
-    let chain=Promise.resolve();
-    missing.forEach(entry=>{chain=chain.then(()=>getPosition().then(g=>{entry.item.gps=g;}));});
-    chain.then(()=>{
-      if(isPhoto && items.some(x=>!x.gps||x.gps.precision>100))throw new Error('Al menos una captura no tiene GPS válido.');
-      if(!window.opener)throw new Error('Se ha perdido la conexión con la app. Vuelve a abrir esta cámara desde la obra.');
-      const payload={app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_BATCH',requestId:requestId,mode:mode,type:type,obraId:obraId,items:items.map(x=>({blob:x.blob,capturedAt:x.capturedAt,gps:x.gps}))};
-      window.opener.postMessage(payload,returnOrigin);
-      status.textContent='Imágenes enviadas a la aplicación. Esperando confirmación…';
-      const timer=setTimeout(()=>{sending=false;cancel.disabled=false;update();showError('No llegó confirmación de la aplicación. Comprueba que la pestaña de la app sigue abierta y vuelve a intentarlo.');},12000);
-      function ackHandler(event){
-        if(event.origin!==returnOrigin||!event.data||event.data.app!=='AISLAMIENTOS_CAE_CAMERA'||event.data.kind!=='CAMERA_BATCH_ACK'||event.data.requestId!==requestId)return;
-        clearTimeout(timer);window.removeEventListener('message',ackHandler);
-        if(!event.data.ok){sending=false;cancel.disabled=false;update();showError(event.data.message||'La aplicación rechazó la transferencia.');return;}
-        status.textContent=event.data.message||'Transferencia recibida. La subida continuará en la aplicación.';
-        stopCamera();capture.disabled=true;send.disabled=true;
-        setTimeout(()=>{try{window.close();}catch(e){}placeholder.classList.remove('hidden');placeholder.textContent='Transferencia recibida. Vuelve a la pestaña de APP AISLAMIENTOS CAE.';},700);
-      }
-      window.addEventListener('message',ackHandler);
-    }).catch(err=>{sending=false;cancel.disabled=false;update();showError(err&&err.message?err.message:String(err));status.textContent='No se enviaron las imágenes. Las capturas siguen guardadas aquí para reintentar.';});
+  function addThumb(blob,number,item){
+    const box=document.createElement('div');box.className='thumb';
+    const img=document.createElement('img');img.alt='Captura '+number;img.src=URL.createObjectURL(blob);
+    const sp=document.createElement('span');sp.textContent=number;sp.style.bottom='2px';sp.style.right='3px';
+    const state=document.createElement('span');state.className='thumb-state';state.textContent=isDocument?'PÁGINA':'PREPARANDO';
+    const retry=document.createElement('button');retry.type='button';retry.className='thumb-retry';retry.textContent='REINTENTAR';retry.addEventListener('click',()=>retryPhoto(item));
+    box.append(img,sp,state,retry);thumbs.appendChild(box);
+    return {
+      setStatus:function(text,cls){box.classList.remove('done','error','uploading');if(cls)box.classList.add(cls);state.textContent=text;},
+      showRetry:function(visible){retry.style.display=visible?'block':'none';},
+      box:box
+    };
   }
-  capture.addEventListener('click',captureOne);send.addEventListener('click',sendBatch);cancel.addEventListener('click',cancelCapture);
+  function retryPhoto(item){
+    if(!item||!item.blob||!isPhoto||sending)return;
+    clearError();
+    const gpsReady=item.gps&&Number.isFinite(item.gps.precision)&&item.gps.precision>0&&item.gps.precision<=100;
+    (gpsReady?Promise.resolve(item.gps):currentGps()).then(g=>{
+      item.gps=g;item.status='uploading';item.thumb.setStatus('SUBIENDO','uploading');item.thumb.showRetry(false);update();
+      if(!window.opener)throw new Error('Se ha perdido la conexión con la app. Abre la cámara desde una obra.');
+      window.opener.postMessage({app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_PHOTO',requestId:requestId,mode:mode,type:type,obraId:obraId,photoId:item.photoId,item:{blob:item.blob,capturedAt:item.capturedAt,gps:item.gps}},returnOrigin);
+    }).catch(e=>{item.status='error';item.thumb.setStatus('ERROR','error');item.thumb.showRetry(true);showError(e&&e.message?e.message:String(e));update();});
+  }
+  function closeWhenAcked(message){
+    stopCamera();capture.disabled=true;send.disabled=true;cancel.disabled=true;
+    status.textContent=message||'Operación terminada.';
+    placeholder.classList.remove('hidden');placeholder.textContent=message||'Puedes volver a APP AISLAMIENTOS CAE.';
+    setTimeout(()=>{try{window.close();}catch(e){}},450);
+  }
+  function cancelCapture(){
+    if(sending)return;
+    if(isPhoto){
+      const pending=items.filter(x=>x.status!=='done').length;
+      if(pending&&!window.confirm('Hay '+pending+' foto(s) que podrían no haberse subido. ¿Quieres salir y descartar las que falten?'))return;
+      sending=true;capture.disabled=true;send.disabled=true;cancel.disabled=true;status.textContent='Terminando las subidas que ya empezaron…';
+      try{window.opener.postMessage({app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_CANCEL',requestId:requestId,mode:mode,type:type,obraId:obraId,allowPartial:true},returnOrigin);}
+      catch(e){sending=false;update();showError('No se pudo informar a la app del cierre.');}
+      return;
+    }
+    try{if(window.opener)window.opener.postMessage({app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_CANCEL',requestId:requestId,mode:mode,type:type,obraId:obraId},returnOrigin);}catch(e){}
+    stopCamera();try{window.close();}catch(e){}status.textContent='Captura cancelada.';placeholder.classList.remove('hidden');placeholder.textContent='Captura cancelada';capture.disabled=true;send.disabled=true;
+  }
+  function finishPhotoSession(){
+    if(sending||!items.length)return;
+    const failed=items.filter(x=>x.status==='error');
+    if(failed.length){showError('Hay '+failed.length+' foto(s) con error. Pulsa REINTENTAR en cada miniatura antes de terminar.');return;}
+    clearError();sending=true;capture.disabled=true;send.disabled=true;cancel.disabled=true;status.textContent='Esperando a que terminen las subidas y actualizando la obra…';
+    try{window.opener.postMessage({app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_FINISH',requestId:requestId,mode:mode,type:type,obraId:obraId},returnOrigin);}
+    catch(e){sending=false;cancel.disabled=false;update();showError('No se pudo conectar con la aplicación.');}
+  }
+  function sendDocumentBatch(){
+    if(sending||!items.length)return;clearError();sending=true;capture.disabled=true;send.disabled=true;cancel.disabled=true;status.textContent='Preparando y transfiriendo las páginas…';
+    if(!window.opener){sending=false;cancel.disabled=false;update();showError('Se ha perdido la conexión con la app. Vuelve a abrir esta cámara desde la obra.');return;}
+    const payload={app:'AISLAMIENTOS_CAE_CAMERA',kind:'CAMERA_BATCH',requestId:requestId,mode:mode,type:type,obraId:obraId,items:items.map(x=>({blob:x.blob,capturedAt:x.capturedAt,gps:null}))};
+    window.opener.postMessage(payload,returnOrigin);
+    status.textContent='Páginas enviadas a la aplicación. Esperando confirmación…';
+    const timer=setTimeout(()=>{sending=false;cancel.disabled=false;update();showError('No llegó confirmación de la aplicación. Comprueba que la pestaña de la app sigue abierta y vuelve a intentarlo.');},15000);
+    function ackHandler(event){
+      if(event.origin!==returnOrigin||!event.data||event.data.app!=='AISLAMIENTOS_CAE_CAMERA'||event.data.kind!=='CAMERA_BATCH_ACK'||event.data.requestId!==requestId)return;
+      clearTimeout(timer);window.removeEventListener('message',ackHandler);
+      if(!event.data.ok){sending=false;cancel.disabled=false;update();showError(event.data.message||'La aplicación rechazó las páginas.');return;}
+      closeWhenAcked(event.data.message||'PDF en proceso. Vuelve a la pestaña de APP AISLAMIENTOS CAE.');
+    }
+    window.addEventListener('message',ackHandler);
+  }
+  window.addEventListener('message',event=>{
+    if(event.origin!==returnOrigin||event.source!==window.opener||!event.data||event.data.app!=='AISLAMIENTOS_CAE_CAMERA'||event.data.requestId!==requestId)return;
+    const msg=event.data;
+    if(msg.kind==='CAMERA_PHOTO_ACK'&&isPhoto){
+      const item=items.find(x=>x.photoId===String(msg.photoId||''));if(!item)return;
+      if(msg.ok){item.status='done';item.thumb.setStatus('SUBIDA','done');item.thumb.showRetry(false);item.blob=null;status.textContent=msg.message||'Foto guardada en Drive. Puedes continuar.';}
+      else{item.status='error';item.thumb.setStatus('ERROR','error');item.thumb.showRetry(true);warning.style.display='block';warning.textContent=msg.message||'No se pudo subir esta foto.';status.textContent='Una foto no se ha subido. Puedes reintentarla desde su miniatura.';}
+      update();return;
+    }
+    if(msg.kind==='CAMERA_FINISH_ACK'&&isPhoto){
+      if(!msg.ok){sending=false;cancel.disabled=false;update();showError(msg.message||'No se pudo finalizar la carga.');return;}
+      closeWhenAcked(msg.message||'Todas las fotos se han procesado.');return;
+    }
+    if(msg.kind==='CAMERA_CANCEL_ACK'&&isPhoto){
+      closeWhenAcked(msg.message||'Captura cerrada.');return;
+    }
+  });
+  capture.addEventListener('click',captureOne);
+  send.addEventListener('click',()=>{if(isDocument)sendDocumentBatch();else finishPhotoSession();});
+  cancel.addEventListener('click',cancelCapture);
   window.addEventListener('pagehide',stopCamera,{once:true});
   start();update();
 })();
